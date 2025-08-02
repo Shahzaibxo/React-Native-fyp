@@ -73,6 +73,32 @@ export class RealFrameProcessor {
     }
   }
 
+  async processImagePath(imagePath: string): Promise<ModelPrediction[]> {
+    const currentTime = Date.now();
+    
+    // Throttle processing to prevent overwhelming the device
+    if (this.isProcessing || !this.isModelLoaded || (currentTime - this.lastProcessTime) < this.processInterval) {
+      return [];
+    }
+
+    this.isProcessing = true;
+    this.lastProcessTime = currentTime;
+
+    try {
+      console.log('Processing image from path for object detection...');
+      
+      // Use TensorFlow Lite to process the image from file path
+      const results = await this.runInferenceOnImagePath(imagePath);
+
+      this.isProcessing = false;
+      return results;
+    } catch (error) {
+      console.error('Image processing failed:', error);
+      this.isProcessing = false;
+      return [];
+    }
+  }
+
   private async runInferenceOnFrame(frame: Frame): Promise<ModelPrediction[]> {
     try {
       // For TensorFlow Lite with react-native-tflite, we can process frames directly
@@ -91,6 +117,31 @@ export class RealFrameProcessor {
       return this.processTFLiteDetections(detections, frame.width, frame.height);
     } catch (error) {
       console.error('TensorFlow Lite inference failed:', error);
+      return [];
+    }
+  }
+
+  private async runInferenceOnImagePath(imagePath: string): Promise<ModelPrediction[]> {
+    try {
+      // Process image from file path using TensorFlow Lite
+      const detections = await Tflite.detectObjectOnImage({
+        path: imagePath,
+        model: 'model/yolov8n.tflite',
+        imageMean: 0.0,
+        imageStd: 255.0,
+        threshold: 0.4, // Lower threshold for better detection
+        numResultsPerClass: 5, // Limit results per class for performance
+      });
+
+      // For photo processing, we'll use a standard size assumption or get actual image dimensions
+      // Most photos will be processed at a standard resolution
+      const imageWidth = 640; // Standard YOLOv8 input width
+      const imageHeight = 640; // Standard YOLOv8 input height
+
+      // Convert TensorFlow Lite results to our format
+      return this.processTFLiteDetections(detections, imageWidth, imageHeight);
+    } catch (error) {
+      console.error('TensorFlow Lite image inference failed:', error);
       return [];
     }
   }

@@ -7,14 +7,12 @@ import {
   Alert,
   PermissionsAndroid,
   Platform,
+  TouchableOpacity,
 } from 'react-native';
 import {
   Camera,
-  useCameraDevices,
-  useFrameProcessor,
-  Frame,
+  useCameraDevice,
 } from 'react-native-vision-camera';
-import { runOnJS } from 'react-native-reanimated';
 import RealFrameProcessor, { ModelPrediction } from '../utils/RealFrameProcessor';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -23,9 +21,11 @@ const ObjectDetectionCamera: React.FC = () => {
   const [hasPermission, setHasPermission] = useState(false);
   const [isModelLoading, setIsModelLoading] = useState(true);
   const [detections, setDetections] = useState<ModelPrediction[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
   const frameProcessorRef = useRef<RealFrameProcessor | null>(null);
-  const devices = useCameraDevices();
-  const device = devices.find(d => d.position === 'back');
+  const cameraRef = useRef<Camera>(null);
+  const device = useCameraDevice('back');
+  const processingInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     requestPermissions();
@@ -35,8 +35,23 @@ const ObjectDetectionCamera: React.FC = () => {
       if (frameProcessorRef.current) {
         frameProcessorRef.current.dispose();
       }
+      if (processingInterval.current) {
+        clearInterval(processingInterval.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isModelLoading && hasPermission && device) {
+      startContinuousDetection();
+    }
+    
+    return () => {
+      if (processingInterval.current) {
+        clearInterval(processingInterval.current);
+      }
+    };
+  }, [isModelLoading, hasPermission, device]);
 
   const requestPermissions = async () => {
     try {
@@ -89,25 +104,36 @@ const ObjectDetectionCamera: React.FC = () => {
     setDetections(newDetections);
   }, []);
 
-  const frameProcessor = useFrameProcessor(
-    (frame: Frame) => {
-      'worklet';
-      
-      if (frameProcessorRef.current && frameProcessorRef.current.isReady()) {
-        // Process real camera frame with YOLOv8 TensorFlow Lite - NO SIMULATION
-        frameProcessorRef.current
-          .processFrame(frame)
-          .then((realDetections) => {
-            // Only update if we have real detections from the model
-            runOnJS(processDetections)(realDetections);
-          })
-          .catch((error) => {
-            console.error('Real frame processing error:', error);
-          });
+  const startContinuousDetection = useCallback(() => {
+    if (processingInterval.current) {
+      clearInterval(processingInterval.current);
+    }
+
+    processingInterval.current = setInterval(async () => {
+      if (isProcessing || !cameraRef.current || !frameProcessorRef.current?.isReady()) {
+        return;
       }
-    },
-    [processDetections]
-  );
+
+      try {
+        setIsProcessing(true);
+        
+        // Take a photo for processing
+        const photo = await cameraRef.current.takePhoto({
+          enableShutterSound: false,
+        });
+
+        if (photo.path && frameProcessorRef.current) {
+          // Convert photo to frame-like data and process
+          const detectionResults = await frameProcessorRef.current.processImagePath(photo.path);
+          processDetections(detectionResults);
+        }
+      } catch (error) {
+        console.error('Continuous detection error:', error);
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 500); // Process every 500ms for smooth detection
+  }, [isProcessing, processDetections]);
 
   const renderBoundingBox = (detection: ModelPrediction, index: number) => {
     const [x, y, width, height] = detection.bbox;
@@ -160,10 +186,11 @@ const ObjectDetectionCamera: React.FC = () => {
   return (
     <View style={styles.container}>
       <Camera
+        ref={cameraRef}
         style={styles.camera}
         device={device}
         isActive={true}
-        frameProcessor={frameProcessor}
+        photo={true}
       />
       
       {/* Detection overlay */}
@@ -177,7 +204,7 @@ const ObjectDetectionCamera: React.FC = () => {
           Real YOLOv8 Detection: {detections.length} objects
         </Text>
         <Text style={styles.statusSubText}>
-          TensorFlow Lite • No Simulation
+          TensorFlow Lite • Photo-based • {isProcessing ? 'Processing...' : 'Ready'}
         </Text>
       </View>
     </View>
